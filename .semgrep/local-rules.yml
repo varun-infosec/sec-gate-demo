@@ -1,0 +1,22 @@
+rules:
+  - id: bureau-no-eval
+    languages: [javascript, typescript]
+    severity: ERROR
+    message: "eval() on dynamic input — code injection risk (CWE-95)"
+    pattern: eval(...)
+
+  - id: bureau-exec-string-concat
+    languages: [javascript, typescript]
+    severity: ERROR
+    message: "child_process exec() with string concatenation — command injection risk (CWE-78)"
+    pattern-either:
+      - pattern: exec($CMD + $INPUT, ...)
+      - pattern: $CP.exec($CMD + $INPUT, ...)
+
+  - id: bureau-sql-string-concat
+    languages: [javascript, typescript]
+    severity: ERROR
+    message: "SQL built by string concatenation — SQL injection risk (CWE-89)"
+    pattern-either:
+      - pattern: $DB.query($A + $B, ...)
+      - pattern: $DB.query($A + $B)

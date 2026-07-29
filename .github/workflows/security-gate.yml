@@ -1,0 +1,222 @@
+name: security-gate
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  checks: write
+  pull-requests: write
+  issues: write
+
+env:
+  GH_TOKEN: ${{ github.token }}
+
+jobs:
+  secrets:
+    runs-on: ubuntu-latest
+    outputs:
+      count: ${{ steps.scan.outputs.count }}
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      - name: Install gitleaks 8.30.1
+        run: |
+          curl -sSfL -o /tmp/gitleaks.tgz https://github.com/gitleaks/gitleaks/releases/download/v8.30.1/gitleaks_8.30.1_linux_x64.tar.gz
+          tar -xzf /tmp/gitleaks.tgz -C /tmp gitleaks
+          sudo install /tmp/gitleaks /usr/local/bin/gitleaks
+          gitleaks version
+      - name: Scan working tree for secrets
+        id: scan
+        run: |
+          gitleaks dir . -f json -r gitleaks.json --exit-code 0 --redact --no-banner
+          [ -s gitleaks.json ] || echo "[]" > gitleaks.json
+          echo "count=$(jq length gitleaks.json)" >> "$GITHUB_OUTPUT"
+      - uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4 # v5
+        if: always()
+        with:
+          name: gitleaks-report
+          path: gitleaks.json
+
+  sast:
+    runs-on: ubuntu-latest
+    outputs:
+      error: ${{ steps.scan.outputs.error }}
+      warning: ${{ steps.scan.outputs.warning }}
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      - name: Install semgrep 1.172.0
+        run: pipx install "semgrep==1.172.0" || pip install --user "semgrep==1.172.0"
+      - name: Semgrep scan (registry ruleset + bundled local rules)
+        id: scan
+        run: |
+          semgrep scan --config p/default --config .semgrep/local-rules.yml \
+            --json-output=semgrep.json --sarif-output=semgrep.sarif || \
+          semgrep scan --config .semgrep/local-rules.yml \
+            --json-output=semgrep.json --sarif-output=semgrep.sarif
+          echo "error=$(jq '[.results[] | select(.extra.severity=="ERROR")] | length' semgrep.json)" >> "$GITHUB_OUTPUT"
+          echo "warning=$(jq '[.results[] | select(.extra.severity=="WARNING")] | length' semgrep.json)" >> "$GITHUB_OUTPUT"
+      - uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4 # v5
+        if: always()
+        with:
+          name: semgrep-report
+          path: |
+            semgrep.json
+            semgrep.sarif
+
+  deps:
+    runs-on: ubuntu-latest
+    outputs:
+      critical: ${{ steps.scan.outputs.critical }}
+      high: ${{ steps.scan.outputs.high }}
+      medium: ${{ steps.scan.outputs.medium }}
+      low: ${{ steps.scan.outputs.low }}
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      - name: Install trivy v0.72.0
+        run: curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh | sh -s -- -b /usr/local/bin v0.72.0
+      - name: Dependency vulnerability scan (lockfiles)
+        id: scan
+        run: |
+          trivy fs --scanners vuln --format json --output trivy-vuln.json --exit-code 0 .
+          for sev in critical high medium low; do
+            SEV=$(echo "$sev" | tr '[:lower:]' '[:upper:]')
+            echo "$sev=$(jq --arg s "$SEV" '[.Results[]?.Vulnerabilities[]? | select(.Severity==$s)] | length' trivy-vuln.json)" >> "$GITHUB_OUTPUT"
+          done
+      - uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4 # v5
+        if: always()
+        with:
+          name: trivy-vuln-report
+          path: trivy-vuln.json
+
+  iac:
+    runs-on: ubuntu-latest
+    outputs:
+      critical: ${{ steps.scan.outputs.critical }}
+      high: ${{ steps.scan.outputs.high }}
+      medium: ${{ steps.scan.outputs.medium }}
+      low: ${{ steps.scan.outputs.low }}
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      - name: Install trivy v0.72.0
+        run: curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh | sh -s -- -b /usr/local/bin v0.72.0
+      - name: IaC misconfiguration scan
+        id: scan
+        run: |
+          trivy config --format json --output trivy-iac.json --exit-code 0 .
+          for sev in critical high medium low; do
+            SEV=$(echo "$sev" | tr '[:lower:]' '[:upper:]')
+            echo "$sev=$(jq --arg s "$SEV" '[.Results[]?.Misconfigurations[]? | select(.Severity==$s)] | length' trivy-iac.json)" >> "$GITHUB_OUTPUT"
+          done
+      - uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4 # v5
+        if: always()
+        with:
+          name: trivy-iac-report
+          path: trivy-iac.json
+
+  gate:
+    name: security-gate
+    runs-on: ubuntu-latest
+    needs: [secrets, sast, deps, iac]
+    if: always()
+    steps:
+      - name: Aggregate, publish, enforce
+        env:
+          SECRETS_COUNT: ${{ needs.secrets.outputs.count }}
+          SAST_ERROR: ${{ needs.sast.outputs.error }}
+          SAST_WARNING: ${{ needs.sast.outputs.warning }}
+          DEPS_CRITICAL: ${{ needs.deps.outputs.critical }}
+          DEPS_HIGH: ${{ needs.deps.outputs.high }}
+          DEPS_MEDIUM: ${{ needs.deps.outputs.medium }}
+          DEPS_LOW: ${{ needs.deps.outputs.low }}
+          IAC_CRITICAL: ${{ needs.iac.outputs.critical }}
+          IAC_HIGH: ${{ needs.iac.outputs.high }}
+          IAC_MEDIUM: ${{ needs.iac.outputs.medium }}
+          IAC_LOW: ${{ needs.iac.outputs.low }}
+          SECRETS_RESULT: ${{ needs.secrets.result }}
+          SAST_RESULT: ${{ needs.sast.result }}
+          DEPS_RESULT: ${{ needs.deps.result }}
+          IAC_RESULT: ${{ needs.iac.result }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          BRANCH: ${{ github.head_ref || github.ref_name }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          verdict="pass"
+          reasons=""
+
+          # Fail closed: every scanner job must have succeeded and emitted counts
+          for pair in "secrets:$SECRETS_RESULT" "sast:$SAST_RESULT" "deps:$DEPS_RESULT" "iac:$IAC_RESULT"; do
+            job="${pair%%:*}"; r="${pair#*:}"
+            if [ "$r" != "success" ]; then verdict="scanner_error"; reasons="$reasons $job job: $r."; fi
+          done
+          for v in "$SECRETS_COUNT" "$SAST_ERROR" "$DEPS_CRITICAL" "$IAC_CRITICAL"; do
+            if [ -z "$v" ]; then verdict="scanner_error"; reasons="$reasons missing scanner output."; break; fi
+          done
+
+          SC=${SECRETS_COUNT:-0}; SE=${SAST_ERROR:-0}; SW=${SAST_WARNING:-0}
+          DC=${DEPS_CRITICAL:-0}; DH=${DEPS_HIGH:-0}; DM=${DEPS_MEDIUM:-0}; DL=${DEPS_LOW:-0}
+          IC=${IAC_CRITICAL:-0}; IH=${IAC_HIGH:-0}; IM=${IAC_MEDIUM:-0}; IL=${IAC_LOW:-0}
+
+          if [ "$verdict" = "pass" ]; then
+            [ "$SC" -gt 0 ] && { verdict="fail"; reasons="$reasons $SC secret(s) detected."; }
+            [ "$SE" -gt 0 ] && { verdict="fail"; reasons="$reasons $SE blocking SAST finding(s)."; }
+            [ $((DC + DH)) -gt 0 ] && { verdict="fail"; reasons="$reasons $((DC + DH)) HIGH/CRITICAL dependency CVE(s)."; }
+            [ $((IC + IH)) -gt 0 ] && { verdict="fail"; reasons="$reasons $((IC + IH)) HIGH/CRITICAL IaC misconfig(s)."; }
+          fi
+
+          case "$verdict" in
+            pass)          icon="✅"; conclusion="success"; title="Security Gate: PASS" ;;
+            fail)          icon="⛔"; conclusion="failure"; title="Security Gate: FAIL —$reasons" ;;
+            scanner_error) icon="⚠️"; conclusion="failure"; title="Security Gate: SCANNER ERROR (fail closed) —$reasons" ;;
+          esac
+
+          {
+            echo "## $icon Security Gate: $(echo "$verdict" | tr '[:lower:]' '[:upper:]' | tr '_' ' ')"
+            echo ""
+            [ -n "$reasons" ] && echo "**Why:**$reasons" && echo ""
+            echo "| Gate | Tool | Result |"
+            echo "|---|---|---|"
+            echo "| Secrets | gitleaks | $SC finding(s) |"
+            echo "| SAST | semgrep | $SE blocking / $SW warning |"
+            echo "| Dependencies | trivy fs | $DC crit / $DH high / $DM med / $DL low |"
+            echo "| IaC | trivy config | $IC crit / $IH high / $IM med / $IL low |"
+            echo ""
+            echo "Policy: merge blocks on any secret, blocking SAST finding, HIGH/CRITICAL CVE or misconfig, or scanner error. [Run details]($RUN_URL)"
+          } > gate.md
+
+          cat gate.md >> "$GITHUB_STEP_SUMMARY"
+
+          jq -n \
+            --arg repo "$GITHUB_REPOSITORY" --arg sha "$HEAD_SHA" --arg branch "$BRANCH" \
+            --arg verdict "$verdict" --arg run_url "$RUN_URL" \
+            --argjson pr "${PR_NUMBER:-null}" \
+            --argjson sc "$SC" --argjson se "$SE" --argjson sw "$SW" \
+            --argjson dc "$DC" --argjson dh "$DH" --argjson dm "$DM" --argjson dl "$DL" \
+            --argjson ic "$IC" --argjson ih "$IH" --argjson im "$IM" --argjson il "$IL" \
+            '{schema: 1, repo: $repo, sha: $sha, branch: $branch, pr: $pr, verdict: $verdict, run_url: $run_url,
+              tools: {gitleaks: {findings: $sc},
+                      semgrep: {error: $se, warning: $sw},
+                      trivy_vuln: {critical: $dc, high: $dh, medium: $dm, low: $dl},
+                      trivy_iac: {critical: $ic, high: $ih, medium: $im, low: $il}},
+              ts: (now | todate)}' > metrics.json
+
+          # Machine-readable check-run = dashboard data channel (never fails the gate)
+          jq -n --arg name "Security Gate" --arg sha "$HEAD_SHA" --arg conclusion "$conclusion" \
+                --arg title "$title" \
+                --rawfile body gate.md --rawfile metrics metrics.json \
+                '{name: $name, head_sha: $sha, status: "completed", conclusion: $conclusion,
+                  output: {title: $title, summary: ($body + "\n```json\n" + $metrics + "\n```")}}' > checkrun.json
+          gh api "repos/$GITHUB_REPOSITORY/check-runs" --method POST --input checkrun.json > /dev/null \
+            && echo "check-run published" || echo "warn: check-run publish failed (dashboard channel only)"
+
+          # One sticky PR comment, updated in place
+          if [ -n "$PR_NUMBER" ]; then
+            gh pr comment "$PR_NUMBER" -R "$GITHUB_REPOSITORY" --edit-last --create-if-none --body-file gate.md \
+              || gh pr comment "$PR_NUMBER" -R "$GITHUB_REPOSITORY" --body-file gate.md \
+              || echo "warn: PR comment failed"
+          fi
+
+          [ "$verdict" = "pass" ] || exit 1

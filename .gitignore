@@ -1,0 +1,8 @@
+node_modules/
+*.log
+gitleaks.json
+semgrep.json
+semgrep.sarif
+trivy-vuln.json
+trivy-iac.json
+.DS_Store

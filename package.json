@@ -1,0 +1,10 @@
+{
+  "name": "sec-gate-demo",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Intentionally vulnerable demo app for the bureau.id PR security gate (all findings fabricated)",
+  "main": "app.js",
+  "dependencies": {
+    "lodash": "4.17.21"
+  }
+}
