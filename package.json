@@ -4,5 +4,7 @@
   "private": true,
   "description": "Intentionally vulnerable demo app for the bureau.id PR security gate (all findings fabricated)",
   "main": "app.js",
-  "dependencies": {}
+  "dependencies": {
+    "lodash": "4.17.15"
+  }
 }
