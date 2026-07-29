@@ -1,7 +1,6 @@
 // sec-gate-demo — tiny payments lookup service (never actually run; demo only)
 const express = require("express");
 const mysql = require("mysql2");
-const _ = require("lodash");
 
 const app = express();
 const db = mysql.createConnection({
@@ -20,7 +19,7 @@ app.get("/lookup", (req, res) => {
 });
 
 app.get("/health", (_req, res) => {
-  res.json(_.pick({ ok: true, ts: Date.now() }, ["ok"]));
+  res.json({ ok: true });
 });
 
 app.listen(process.env.PORT || 3000);

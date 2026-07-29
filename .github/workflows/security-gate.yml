@@ -76,7 +76,10 @@ jobs:
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
       - name: Install trivy v0.72.0
-        run: curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh | sh -s -- -b /usr/local/bin v0.72.0
+        run: |
+          curl -sSfL -o /tmp/trivy.tgz https://github.com/aquasecurity/trivy/releases/download/v0.72.0/trivy_0.72.0_Linux-64bit.tar.gz
+          tar -xzf /tmp/trivy.tgz -C /tmp trivy
+          sudo install /tmp/trivy /usr/local/bin/trivy
       - name: Dependency vulnerability scan (lockfiles)
         id: scan
         run: |
@@ -101,7 +104,10 @@ jobs:
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
       - name: Install trivy v0.72.0
-        run: curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh | sh -s -- -b /usr/local/bin v0.72.0
+        run: |
+          curl -sSfL -o /tmp/trivy.tgz https://github.com/aquasecurity/trivy/releases/download/v0.72.0/trivy_0.72.0_Linux-64bit.tar.gz
+          tar -xzf /tmp/trivy.tgz -C /tmp trivy
+          sudo install /tmp/trivy /usr/local/bin/trivy
       - name: IaC misconfiguration scan
         id: scan
         run: |
